@@ -4,7 +4,8 @@ name: Vozni red
 
 on:
   schedule:
-    - cron: "17 * * * *" # svaki sat; ZIP se skida, a baza gradi samo kad se ZIP promijeni
+    - cron: "17 * * * *" # svaki sat; ZIP se skida, a baza gradi samo kad se ZIP ili kod za izgradnju promijeni
+    - cron: "40 7 * * *" # svaki dan u 8:40/9:40 po zagrebačkom: spaja li se objavljeni vozni red s feedom uživo
   workflow_dispatch:
 
 permissions:
@@ -22,10 +23,11 @@ jobs:
         with:
           python-version: "3.12"
       - id: build
+        if: github.event.schedule != '40 7 * * *'
         run: >
           python3 -I tools/publish_timetable.py --out out
           --latest-manifest "https://github.com/${{ github.repository }}/releases/latest/download/manifest.json"
-          --base-url "https://github.com/${{ github.repository }}/releases/download/{version}"
+          --base-url "https://github.com/${{ github.repository }}/releases/download/{tag}"
       - if: steps.build.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -34,6 +36,13 @@ jobs:
           --title "Vozni red ${{ steps.build.outputs.tag }}"
           --notes "Izvor podataka: ZET d.o.o., Otvorena dozvola (https://data.gov.hr/otvorena-dozvola)"
           --latest
+      # Pada (pa GitHub šalje e-mail) ako se zadnji objavljeni vozni red ne spaja s feedom uživo: ZET je promijenio vozni
+      # red, a novi nije objavljen (npr. ZIP je na novoj adresi). Zato se pokreće i nakon objave, u istom poslu.
+      - name: Provjera s feedom uživo
+        if: github.event.schedule == '40 7 * * *' || github.event_name == 'workflow_dispatch'
+        run: >
+          python3 -I tools/publish_timetable.py --health
+          --latest-manifest "https://github.com/${{ github.repository }}/releases/latest/download/manifest.json"
       # GitHub gasi zakazane poslove u repozitoriju bez aktivnosti 60 dana; prazan commit svakih ~45 dana to sprječava.
       - name: Keepalive
         run: |
