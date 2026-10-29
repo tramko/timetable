@@ -1,0 +1,45 @@
+# Osvježavanje voznog reda bez izdanja aplikacije (vidi "Zastarjeli vozni red" u CLAUDE.md ZetLivea).
+# Izvor je u ZetLive repozitoriju (tools/timetable-job/); u repozitorij s podacima ga kopira sync.sh.
+name: Vozni red
+
+on:
+  schedule:
+    - cron: "17 * * * *" # svaki sat; ZIP se skida, a baza gradi samo kad se ZIP promijeni
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: timetable
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: build
+        run: >
+          python3 -I tools/publish_timetable.py --out out
+          --latest-manifest "https://github.com/${{ github.repository }}/releases/latest/download/manifest.json"
+          --base-url "https://github.com/${{ github.repository }}/releases/download/{version}"
+      - if: steps.build.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ steps.build.outputs.tag }}" out/*
+          --title "Vozni red ${{ steps.build.outputs.tag }}"
+          --notes "Izvor podataka: ZET d.o.o., Otvorena dozvola (https://data.gov.hr/otvorena-dozvola)"
+          --latest
+      # GitHub gasi zakazane poslove u repozitoriju bez aktivnosti 60 dana; prazan commit svakih ~45 dana to sprječava.
+      - name: Keepalive
+        run: |
+          if [ $(( $(date +%s) - $(git log -1 --format=%ct) )) -gt $(( 45 * 86400 )) ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "keepalive"
+            git push
+          fi
