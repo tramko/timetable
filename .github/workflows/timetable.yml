@@ -28,6 +28,17 @@ jobs:
           python3 -I tools/publish_timetable.py --out out
           --latest-manifest "https://github.com/${{ github.repository }}/releases/latest/download/manifest.json"
           --base-url "https://github.com/${{ github.repository }}/releases/download/{tag}"
+      # Potpis manifesta (Ed25519); aplikacija bez valjanog potpisa ne vjeruje manifestu. Ključ je samo u tajni.
+      - if: steps.build.outputs.changed == 'true'
+        env:
+          SIGNING_KEY: ${{ secrets.TIMETABLE_SIGNING_KEY }}
+        run: |
+          test -n "$SIGNING_KEY" || { echo "nema tajne TIMETABLE_SIGNING_KEY"; exit 1; }
+          umask 077
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/key.pem" -in out/manifest.json -out "$RUNNER_TEMP/manifest.bin"
+          base64 -w0 "$RUNNER_TEMP/manifest.bin" > out/manifest.sig
+          rm -f "$RUNNER_TEMP/key.pem"
       - if: steps.build.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
