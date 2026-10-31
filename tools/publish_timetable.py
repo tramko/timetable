@@ -14,7 +14,7 @@ neispravna ili se ne spaja s feedom uživo.
 Provjera (--health): spaja li se zadnji objavljeni vozni red s feedom uživo. Izlazni kod != 0 ako ne (ZET je
 promijenio vozni red, a novi nije objavljen).
 """
-import argparse, datetime, hashlib, json, os, sqlite3, subprocess, sys, tempfile, urllib.error, urllib.request
+import argparse, datetime, hashlib, http.client, json, os, shutil, sqlite3, subprocess, sys, tempfile, time, urllib.error, urllib.request
 from zoneinfo import ZoneInfo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -47,10 +47,31 @@ def builder_sha256():
     return h.hexdigest()
 
 
-def download(url, path):
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=300) as r, open(path, "wb") as f:
-        f.write(r.read())
+# Čekanje između pokušaja (s). ZET-ov poslužitelj zna kratko ne odgovarati (31. 10. 2026.: timeout u 05:53 UTC);
+# jedan neuspio pokušaj ne smije srušiti posao.
+RETRY_WAITS = (60, 180)
+
+
+class Unreachable(Exception):
+    """Poslužitelj nije odgovorio ni nakon svih pokušaja (mreža, timeout, 5xx)."""
+
+
+def download(url, path, waits=None):
+    waits = RETRY_WAITS if waits is None else waits
+    for attempt in range(len(waits) + 1):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=120) as r, open(path, "wb") as f:
+                shutil.copyfileobj(r, f)
+            return
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as e:
+            # 4xx (npr. 404) nije prolazna greška: odmah van
+            if isinstance(e, urllib.error.HTTPError) and e.code < 500 and e.code != 429:
+                raise
+            if attempt == len(waits):
+                raise Unreachable(f"{url}: {e}") from e
+            print(f"{url} nije odgovorio ({e}); novi pokušaj za {waits[attempt]} s", file=sys.stderr)
+            time.sleep(waits[attempt])
 
 
 def load_manifest(src):
@@ -154,7 +175,13 @@ def publish(a, previous):
         if not zip_path:
             zip_path = os.path.join(tmp, "gtfs.zip")
             print("Skidam", GTFS_URL, file=sys.stderr)
-            download(GTFS_URL, zip_path)
+            try:
+                download(GTFS_URL, zip_path)
+            except Unreachable as e:
+                # ZET je nedostupan: ništa se ne objavljuje, sljedeće pokretanje (za sat) pokušava opet. Upozorenje se
+                # vidi u Actionsima, ali posao ne pada (i ne šalje e-mail) zbog kratkog prekida na ZET-ovoj strani.
+                print(f"::warning::ZET nije dostupan ni nakon {len(RETRY_WAITS) + 1} pokušaja, preskačem: {e}")
+                return output(changed="false")
         source_sha = sha256(zip_path)
         if previous and previous.get("source_sha256") == source_sha and previous.get("builder_sha256") == builder:
             print("Ni ZIP ni kod za izgradnju se nisu promijenili od", previous.get("feed_version"), file=sys.stderr)
